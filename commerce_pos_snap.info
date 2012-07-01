@@ -1,0 +1,6 @@
+name = Commerce POS SNAP
+description = Accept SNAP (Food Stamps) payments in Commerce POS.
+package = Commerce POS
+dependencies[] = commerce_pos
+dependencies[] = commerce_pos_payment
+core = 7.x

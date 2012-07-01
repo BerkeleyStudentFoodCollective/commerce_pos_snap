@@ -1,0 +1,293 @@
+<?php
+
+/**
+ * @file
+ * A module that provides Food Stamp payment features in Commerce POS
+ */
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_pos_snap_commerce_pos_payment_method_info() {
+  return array(
+    'commerce_pos_snap' => array(
+      'method_id' => 'commerce_pos_snap',
+      'title' => t('SNAP payment'),
+      'short_title' => t('SNAP'),
+      'description' => t('SNAP payment method for the POS'),
+      'pos' => array(
+        'cash' => FALSE,
+        'require_amount' => TRUE,
+        'button text' => t('SNAP'),
+        'action text' => 'FS',
+        'button weight' => -10,
+      ),
+    ),
+  );
+}
+
+/**
+ * Calculate the SNAP-eligible amount of an order
+ *
+ * @return
+ * 	A price array of the numeric SNAP-eligible amount.
+ */
+function commerce_pos_snap_calculate_order_snap_eligible($order) {
+  //Loop through the line items, adding the eligible components
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $amount = 0;
+  $currency_code = $order_wrapper->commerce_order_total->currency_code->value();
+
+  foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
+    $line_item = $line_item_wrapper->value();
+    $line_item_amount = commerce_pos_snap_calculate_line_item_snap_eligible($line_item);
+    $amount += commerce_currency_convert($line_item_amount['amount'], $line_item_amount['currency_code'], $currency_code);
+  }
+  return array(
+    'amount' => $amount,
+    'currency_code' => $currency_code,
+  );
+}
+
+/**
+ * Calculate the SNAP-eligible amount of a line item.
+ *
+ */
+function commerce_pos_snap_calculate_line_item_snap_eligible($line_item) {
+  $wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+  $currency_code = $wrapper->commerce_unit_price->currency_code->value();
+
+  $eligible = commerce_pos_snap_eligibility_get($line_item);
+  if ($eligible) {
+    $amount = array(
+      'amount' => $wrapper->commerce_total->amount->value(),
+      'currency_code' => $currency_code,
+    );
+    $components = module_invoke_all('commerce_pos_snap_eligible_components', $line_item);
+    foreach ($components as $component) {
+      $amount['amount'] += commerce_currency_convert($component['amount'], $component['currency_code'], $currency_code);
+    }
+  }
+  else {
+    $amount = array(
+      'amount' => 0,
+      'currency_code' => $currency_code,
+    );
+  }
+
+  return $amount;
+}
+
+/**
+ * Set SNAP eligibility of a line item.
+ */
+function commerce_pos_snap_eligibility_set($line_item, $value = NULL) {
+  if ($value === NULL) {
+    $value = commerce_pos_snap_eligibility_default($line_item);
+  }
+  $line_item->data['commerce_pos_snap_eligible'] = $value;
+}
+
+/**
+ * Get default SNAP eligibility of a line item.
+ */
+function commerce_pos_snap_eligibility_default($line_item) {
+  $wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+  $result = rules_invoke_component('commerce_pos_snap_eligibility', $line_item);
+  return !empty($result[0]);
+}
+
+/**
+ * Get the SNAP eligibility of a line item, stored if available, default otherwise.
+ */
+function commerce_pos_snap_eligibility_get($line_item) {
+  if (!isset($line_item->data['commerce_pos_snap_eligible'])) {
+    return commerce_pos_snap_eligibility_default($line_item);
+  }
+  else {
+    return $line_item->data['commerce_pos_snap_eligible'];
+  }
+}
+
+/**
+ * Implements hook_commerce_price_component_type_info().
+ */
+function commerce_pos_snap_commerce_price_component_type_info() {
+  $components = array();
+
+  // Add a price component type for each tax rate that specifies it.
+  foreach (commerce_tax_rates() as $name => $tax_rate) {
+    if ($tax_rate['price_component']) {
+      $components['snap_exemption_' .$tax_rate['price_component']] = array(
+        'title' => t('SNAP Exemption: @title', array('@title' => $tax_rate['title'])),
+        'display_title' => t('SNAP Exemption: @title', array('@title' => $tax_rate['display_title'])),
+        'tax_rate' => $name,
+      );
+    }
+  }
+
+  return $components;
+}
+
+/**
+ * Apply SNAP tax exemptions to an order.
+ */
+function commerce_pos_snap_apply_tax_exemptions($order) {
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $eligible = commerce_pos_snap_snap_payment_total($order);
+  $order_eligible_amount = $eligible['amount'];
+  $currency_code = $eligible['currency_code'];
+
+  $tax_rates = commerce_tax_rates();
+  foreach ($tax_rates as $name => $tax_rate) {
+    $order_exempted_amount[$name] = 0;
+  }
+
+  $save_order = FALSE;
+
+  foreach($order_wrapper->commerce_line_items as $line_item_wrapper) {
+    $changed = FALSE;
+    $line_item = $line_item_wrapper->value();
+    $line_item_eligible = commerce_pos_snap_calculate_line_item_snap_eligible($line_item);
+    foreach ($tax_rates as $name => $tax_rate) {
+      $component = $tax_rate['price_component'];
+      $exempt_amount = min($order_eligible_amount - $order_exempted_amount['name'], $line_item_eligible['amount']);
+      //if ($exempt_amount > 0) {
+        if (commerce_pos_snap_apply_line_item_tax_exemption($line_item, $currency_code, $tax_rate, $exempt_amount)) {
+          $changed = TRUE;
+        }
+        $order_exempted_amount['name'] += $exempt_amount;
+      //}
+    }
+    if ($changed) {
+      $line_item_wrapper->save();
+      $save_order = TRUE;
+    }
+  }
+
+  if ($save_order) {
+    commerce_order_save($order);
+  }
+}
+
+/**
+ * Exempt a line item from a given tax.
+ *
+ * @return
+ * 	A Boolean indicating whether the line item was changed.
+ */
+function commerce_pos_snap_apply_line_item_tax_exemption($line_item, $currency_code, $tax_rate, $exempt_amount) {
+  $wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+  $component_name = 'snap_exemption_' . $tax_rate['price_component'];
+
+  if ($line_item->quantity != 0) {
+    //TODO: replace this with call to the appropriate calculation function.
+    $amount = - commerce_tax_rate_round_amount($tax_rate, ($exempt_amount * $tax_rate['rate']) / $line_item->quantity);
+  }
+  else {
+    $amount = 0;
+  }
+
+  $existing_exemption = commerce_price_component_total($wrapper->commerce_unit_price->value(), $component_name);
+  if ($amount == $existing_exemption) {
+    return FALSE;
+  }
+  else {
+    $component_price = array(
+    	'amount' => $amount,
+      'currency_code' => $currency_code,
+    );
+    $tax_type = commerce_tax_type_load($tax_rate['type']);
+    $included = $tax_type['display_inclusive'];
+    $unit_price = $wrapper->commerce_unit_price->value();
+    $unit_price['data'] = commerce_price_component_delete($unit_price, $component_name);
+    if ($component_price['amount'] != 0) {
+      $unit_price['data'] = commerce_price_component_add($unit_price, $component_name, $component_price, $included, FALSE);
+    }
+    $wrapper->commerce_unit_price = $unit_price;
+    return TRUE;
+  }
+}
+
+/**
+ * Calculates the total amount paid by SNAP for the order.
+ *
+ * @param $order
+ *   The fully loaded order object whose SNAP amount should be calculated.
+ *
+ * @return
+ *   An array containing the amount and currency code representing the balance
+ *     of the amount paid by SNAP.
+ */
+function commerce_pos_snap_snap_payment_total($order) {
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $order_total = $wrapper->commerce_order_total->value();
+  $transaction_statuses = commerce_payment_transaction_statuses();
+
+  $transactions = commerce_payment_transaction_load_multiple(array(), array('order_id' => $order->order_id, 'payment_method' => 'commerce_pos_snap'));
+  $amount = 0;
+
+  foreach ($transactions as $transaction) {
+    if ($transaction_statuses[$transaction->status]['total']) {
+      $amount += commerce_currency_convert($transaction->amount, $transaction->currency_code, $order_total['currency_code']);
+    }
+  }
+
+  return array('amount' => $amount, 'currency_code' => $order_total['currency_code']);
+}
+
+/**
+ * Getter callback for SNAP amount for an order.
+ */
+function _commerce_pos_snap_order_snap_amount($order) {
+  $amount = commerce_pos_snap_calculate_order_snap_eligible($order);
+  return $amount['amount'];
+}
+
+/**
+ * Getter callback for SNAP currency code for an order.
+ */
+function _commerce_pos_snap_order_snap_currency_code($order) {
+  $amount = commerce_pos_snap_calculate_order_snap_eligible($order);
+  //This will probably only ever return USD, but who knows?
+  return $amount['currency_code'];
+}
+
+/**
+ * Getter callback for SNAP amount for a line item.
+ */
+function _commerce_pos_snap_line_item_snap_amount($line_item) {
+  $amount = commerce_pos_snap_calculate_order_snap_eligible($line_item);
+  return $amount['amount'];
+}
+
+/**
+ * Getter callback for SNAP currency code for an order.
+ */
+function _commerce_pos_snap_line_item_snap_currency_code($line_item) {
+  $amount = commerce_pos_snap_calculate_line_item_snap_eligible($line_item);
+  //This will probably only ever return USD, but who knows?
+  return $amount['currency_code'];
+}
+
+/**
+ * Implements hook_commerce_order_view().
+ */
+function commerce_pos_snap_commerce_order_view($order, $view_mode) {
+  if ($view_mode == 'pos screen' || $view_mode == 'pos receipt') {
+    $snap_eligible = commerce_pos_snap_calculate_order_snap_eligible($order);
+    $placeholders = array('!amount' => commerce_currency_format($snap_eligible['amount'], $snap_eligible['currency_code']));
+    $order->content['snap_amount'] = array(
+      '#type' => 'markup',
+    	'#markup' => t('Snap eligible: !amount', $placeholders),
+      '#weight' => 100,
+    );
+  }
+}
+
+/**
+ * Implements hook_commerce_pos_line_item_on_add().
+ */
+ function commerce_pos_snap_commerce_pos_line_item_on_add($line_item) {
+   commerce_pos_snap_eligibility_set($line_item);
+ }
