@@ -279,7 +279,7 @@ function commerce_pos_snap_commerce_order_view($order, $view_mode) {
     $placeholders = array('!amount' => commerce_currency_format($snap_eligible['amount'], $snap_eligible['currency_code']));
     $order->content['snap_amount'] = array(
       '#type' => 'markup',
-    	'#markup' => t('Snap eligible: !amount', $placeholders),
+    	'#markup' => t('SNAP eligible: !amount', $placeholders),
       '#weight' => 100,
     );
   }
