@@ -20,7 +20,7 @@ function commerce_pos_snap_commerce_pos_payment_method_info() {
         'require_amount' => TRUE,
         'button text' => t('SNAP'),
         'action text' => 'FS',
-        'button weight' => -10,
+        'button weight' => 100,
       ),
     ),
   );
