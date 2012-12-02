@@ -181,15 +181,17 @@ function commerce_pos_snap_apply_line_item_tax_exemption($line_item, $currency_c
   $component_name = 'snap_exemption_' . $tax_rate['price_component'];
 
   if ($line_item->quantity != 0) {
-    //TODO: replace this with call to the appropriate calculation function.
-    $amount = - commerce_tax_rate_round_amount($tax_rate, ($exempt_amount * $tax_rate['rate']) / $line_item->quantity);
+    $unit_exemptible_amount = commerce_tax_rate_round_amount($tax_rate, ($exempt_amount * $tax_rate['rate']) / $line_item->quantity);
+    //Calculate the tax amount.
+    $unit_tax = commerce_price_component_total($wrapper->commerce_unit_price->value(), $tax_rate['price_component']);
+    $amount = - min($unit_exemptible_amount, commerce_currency_convert($unit_tax['amount'], $unit_tax['currency_code'], $currency_code));
   }
   else {
     $amount = 0;
   }
 
   $existing_exemption = commerce_price_component_total($wrapper->commerce_unit_price->value(), $component_name);
-  if ($amount == $existing_exemption) {
+  if ($amount == commerce_currency_convert($existing_exemption['amount'], $existing_exemption['currency_code'], $currency_code)) {
     return FALSE;
   }
   else {
