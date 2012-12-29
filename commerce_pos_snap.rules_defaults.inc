@@ -56,17 +56,19 @@ function commerce_pos_snap_default_rules_configuration() {
  * Implements hook_default_rules_configuration_alter().
  */
 function commerce_pos_snap_default_rules_configuration_alter(&$rules) {
-  $rule_set = $rules['commerce_pos_payment_validate_add'];
-  $rule = rule();
-  $rule->label = t('Disallow adding SNAP payments above SNAP-eligible amount.');
-  $rule->condition(rules_condition('commerce_pos_snap_payment_check_amount', array(
-        'commerce_payment_transaction:select' => 'commerce-payment-transaction',
-        'commerce_order:select' => 'commerce-order',
-        'value' => 'pos_in_progress',
-        ))->negate())
-    ->action('list_add', array(
-        'list:select' => 'errors',
-        'item' => t('You cannot add a SNAP payment of that size.'),
-      ));
-  $rule_set->rule($rule);
+  if (!empty($rules['commerce_pos_payment_validate_add'])) {
+    $rule_set = $rules['commerce_pos_payment_validate_add'];
+    $rule = rule();
+    $rule->label = t('Disallow adding SNAP payments above SNAP-eligible amount.');
+    $rule->condition(rules_condition('commerce_pos_snap_payment_check_amount', array(
+          'commerce_payment_transaction:select' => 'commerce-payment-transaction',
+          'commerce_order:select' => 'commerce-order',
+          'value' => 'pos_in_progress',
+          ))->negate())
+      ->action('list_add', array(
+          'list:select' => 'errors',
+          'item' => t('You cannot add a SNAP payment of that size.'),
+        ));
+    $rule_set->rule($rule);
+  }
 }
